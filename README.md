@@ -16,9 +16,10 @@
 ## 项目架构图
 ```mermaid
 graph TD
-    A[用户浏览器 (HTML5 Canvas)] -->|HTTP 请求 (GET/POST)| B(Flask 后端 API)
-    B -->|更新/获取状态| C{全局状态 (坐标/地图)}
-    B -->|容器化部署| D[Docker 容器]
-    A -->|内网穿透| E[cpolar 公网访问]
+    A["用户浏览器 (HTML5 Canvas)"] -->|HTTP 请求| B("Flask 后端 API")
+    B -->|更新/获取| C{"全局状态 (坐标/地图)"}
+    B -->|容器化部署| D["Docker 容器"]
+    A -->|内网穿透| E["cpolar 公网访问"]
     ## 成果展示
 ![巡检机器人演示截图](./demo.png)
+```
