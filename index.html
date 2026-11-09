@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>10 × 10 巡检机器人仿真</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #eef2ff 0%, #e2e8f0 100%);
+      color: #1f2937;
+      font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+    }
+
+    .container {
+      width: 448px;
+      max-width: 100%;
+      padding: 24px 24px 18px;
+      background: #ffffff;
+      border-radius: 18px;
+      box-shadow: 0 20px 50px rgba(15, 23, 42, 0.14);
+    }
+
+    h1 {
+      margin: 0 0 4px;
+      font-size: 22px;
+      text-align: center;
+      letter-spacing: 0.5px;
+    }
+
+    .subtitle {
+      margin: 0 0 16px;
+      color: #6b7280;
+      font-size: 13px;
+      text-align: center;
+    }
+
+    canvas {
+      display: block;
+      width: 400px;
+      height: auto;
+      max-width: 100%;
+      margin: 0 auto;
+      background: #ffffff;
+      border: 2px solid #334155;
+      border-radius: 8px;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(3, 72px);
+      grid-auto-rows: 46px;
+      gap: 8px;
+      justify-content: center;
+      margin: 18px auto 0;
+    }
+
+    .controls button {
+      border: 0;
+      border-radius: 10px;
+      background: #2563eb;
+      color: #ffffff;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.15s ease, transform 0.08s ease;
+    }
+
+    .controls button:hover:not(:disabled) {
+      background: #1d4ed8;
+    }
+
+    .controls button:active:not(:disabled) {
+      transform: scale(0.96);
+    }
+
+    .controls button:disabled {
+      background: #93c5fd;
+      cursor: not-allowed;
+    }
+
+    /* 按钮排成方向键布局：上 / 左 下 右 */
+    .controls button[data-direction="up"] {
+      grid-column: 2;
+      grid-row: 1;
+    }
+
+    .controls button[data-direction="left"] {
+      grid-column: 1;
+      grid-row: 2;
+    }
+
+    .controls button[data-direction="down"] {
+      grid-column: 2;
+      grid-row: 2;
+    }
+
+    .controls button[data-direction="right"] {
+      grid-column: 3;
+      grid-row: 2;
+    }
+
+    #panel {
+      width: 100%;
+      margin-top: 16px;
+      padding: 10px 12px;
+      resize: none;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      background: #0f172a;
+      color: #d1fae5;
+      font: 13px/1.6 Consolas, "Courier New", monospace;
+    }
+
+    .hint {
+      margin: 10px 0 0;
+      color: #9ca3af;
+      font-size: 12px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <h1>🤖 10 × 10 巡检机器人</h1>
+    <p class="subtitle">白色 = 可通行 · 黑色 = 障碍物 · 红点 = 机器人</p>
+
+    <canvas id="maze" width="400" height="400" aria-label="10 × 10 巡检地图"></canvas>
+
+    <div class="controls" id="controls">
+      <button type="button" data-direction="up" aria-label="向上移动">↑ 上</button>
+      <button type="button" data-direction="left" aria-label="向左移动">← 左</button>
+      <button type="button" data-direction="down" aria-label="向下移动">↓ 下</button>
+      <button type="button" data-direction="right" aria-label="向右移动">→ 右</button>
+    </div>
+
+    <textarea id="panel" rows="7" readonly aria-live="polite"></textarea>
+    <p class="hint">提示：也可以使用键盘方向键（或 W / A / S / D）控制机器人</p>
+  </main>
+
+  <script>
+    // 由 Flask 托管时使用同源地址；直接双击打开文件时回退到本机 5000 端口。
+    const API_BASE = window.location.protocol === 'file:' ? 'http://127.0.0.1:5000' : '';
+
+    const CELL = 40;
+    const ROWS = 10;
+    const COLS = 10;
+    const WIDTH = COLS * CELL;
+    const HEIGHT = ROWS * CELL;
+
+    const canvas = document.getElementById('maze');
+    const ctx = canvas.getContext('2d');
+    const panel = document.getElementById('panel');
+    const buttons = Array.from(document.querySelectorAll('.controls button'));
+
+    const DIRECTION_LABELS = { up: '上', down: '下', left: '左', right: '右' };
+    const DIRECTION_VECTORS = {
+      up: [0, -1],
+      down: [0, 1],
+      left: [-1, 0],
+      right: [1, 0]
+    };
+
+    // 初始为空地图，收到后端数据后替换
+    let maze = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+    let robot = null;
+    let busy = false;
+    const logLines = [];
+
+    function draw() {
+      // 清空画布
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      // 1. 绘制地图：0 = 白，1 = 黑
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          ctx.fillStyle = maze[y] && maze[y][x] === 1 ? '#111827' : '#ffffff';
+          ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+        }
+      }
+
+      // 2. 绘制网格线
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 0; i <= COLS; i++) {
+        const x = i * CELL + 0.5;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, HEIGHT);
+      }
+      for (let j = 0; j <= ROWS; j++) {
+        const y = j * CELL + 0.5;
+        ctx.moveTo(0, y);
+        ctx.lineTo(WIDTH, y);
+      }
+      ctx.stroke();
+
+      // 3. 绘制机器人（红色圆点）
+      if (!robot) return;
+
+      const cx = robot.x * CELL + CELL / 2;
+      const cy = robot.y * CELL + CELL / 2;
+      const radius = CELL * 0.32;
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fillStyle = '#ef4444';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // 圆点内的小短线表示朝向
+      const [dx, dy] = DIRECTION_VECTORS[robot.direction] || [0, -1];
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + dx * radius * 0.65, cy + dy * radius * 0.65);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+      ctx.lineCap = 'butt';
+    }
+
+    function renderPanel() {
+      const header = robot
+        ? `当前坐标: (${robot.x}, ${robot.y})    朝向: ${robot.direction}`
+        : '当前坐标: --    朝向: --';
+      const divider = '─'.repeat(36);
+      const messages = logLines.length ? logLines : ['等待连接后端...'];
+
+      panel.value = [header, divider, ...messages].join('\n');
+      panel.scrollTop = panel.scrollHeight;
+    }
+
+    function addLog(message) {
+      const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      logLines.push(`[${time}] ${message}`);
+      if (logLines.length > 8) logLines.shift();
+      renderPanel();
+    }
+
+    function setBusy(value) {
+      busy = value;
+      buttons.forEach((button) => {
+        button.disabled = value;
+      });
+    }
+
+    function formatError(status, error) {
+      const clean = String(error || '').replace(/^移动失败[:：]\s*/, '');
+
+      if (status === 409) {
+        return `撞墙了！${clean || '前方有障碍物'}`;
+      }
+      if (status === 400) {
+        if (clean.includes('边界')) {
+          return `撞墙了！${clean.replace(/^前方/, '') || '前方超出地图边界'}`;
+        }
+        return `无法移动：${clean || '请求无效'}`;
+      }
+      return `移动失败（HTTP ${status}）：${clean || '未知错误'}`;
+    }
+
+    async function refreshState() {
+      const response = await fetch(`${API_BASE}/api/state`, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`/api/state 返回 HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (!Array.isArray(data.maze) || !data.robot) {
+        throw new Error('/api/state 返回的数据格式不正确');
+      }
+
+      maze = data.maze;
+      robot = data.robot;
+      draw();
+      renderPanel();
+    }
+
+    async function move(direction) {
+      if (busy) return;
+      setBusy(true);
+
+      try {
+        const response = await fetch(`${API_BASE}/api/move`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ direction })
+        });
+
+        let data = {};
+        try {
+          data = await response.json();
+        } catch (parseError) {
+          data = {};
+        }
+
+        if (!response.ok || data.success === false) {
+          addLog(`❌ ${formatError(response.status, data.error)}`);
+        } else {
+          addLog(`✅ 已向${DIRECTION_LABELS[direction]}移动`);
+        }
+
+        // 无论成功与否，都重新获取状态并重绘，确保画面与后端一致
+        await refreshState();
+      } catch (error) {
+        addLog(`⚠️ 请求失败：${error.message}`);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function init() {
+      draw();
+      renderPanel();
+
+      try {
+        await refreshState();
+        addLog('✅ 已连接后端，地图加载完成');
+      } catch (error) {
+        addLog(`⚠️ 无法连接后端（${API_BASE}）：${error.message}`);
+        addLog('请先运行 python app.py，然后刷新本页面。');
+      }
+    }
+
+    buttons.forEach((button) => {
+      button.addEventListener('click', () => move(button.dataset.direction));
+    });
+
+    // 键盘控制
+    document.addEventListener('keydown', (event) => {
+      const keyMap = {
+        ArrowUp: 'up',
+        ArrowDown: 'down',
+        ArrowLeft: 'left',
+        ArrowRight: 'right',
+        w: 'up',
+        s: 'down',
+        a: 'left',
+        d: 'right'
+      };
+
+      const direction = keyMap[event.key] || keyMap[event.key.toLowerCase()];
+      if (direction) {
+        event.preventDefault();
+        move(direction);
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>
